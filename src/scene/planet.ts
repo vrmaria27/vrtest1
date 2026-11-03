@@ -8,6 +8,7 @@ const materials = {
   dark: new THREE.MeshStandardMaterial({ color: '#272737', roughness: 0.72, metalness: 0.45 }),
   rust: new THREE.MeshStandardMaterial({ color: '#ce754c', roughness: 0.7, metalness: 0.3 }),
   glass: new THREE.MeshStandardMaterial({ color: '#3aa0ab', emissive: '#246d79', emissiveIntensity: 0.45, roughness: 0.25, metalness: 0.7 }),
+  gardenGlass: new THREE.MeshStandardMaterial({ color: '#82c9d3', transparent: true, opacity: 0.24, depthWrite: false, roughness: 0.18, metalness: 0.05 }),
   light: new THREE.MeshBasicMaterial({ color: '#8fe8db' }),
   amber: new THREE.MeshBasicMaterial({ color: '#ffc888' }),
   solar: new THREE.MeshStandardMaterial({ color: '#354578', roughness: 0.28, metalness: 0.7 }),
@@ -76,7 +77,7 @@ function buildingTemplate(type: BuildingType): THREE.Group {
   } else if (type === 'greenhouse') {
     cylinder('shell', 1.96, 2.08, 0.4, 0.34, 16);
     cylinder('dark', 1.9, 1.95, 0.12, 0.6, 16);
-    part('glass', new THREE.SphereGeometry(1.88, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2), 0, 0.64, 0);
+    part('gardenGlass', new THREE.SphereGeometry(1.88, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2), 0, 0.64, 0);
     for (let i = 0; i < 6; i++) {
       const rotation = i * Math.PI / 6;
       part('shell', new THREE.TorusGeometry(1.9, 0.025, 4, 20, Math.PI), 0, 0.64, 0, 0, rotation);
@@ -126,6 +127,7 @@ function buildingTemplate(type: BuildingType): THREE.Group {
     const geometry = mergeGeometries(geometries);
     if (!geometry) throw new Error(`Could not create ${type} geometry`);
     const mesh = new THREE.Mesh(geometry, materials[key]);
+    mesh.name = `building-part-${key}`;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     group.add(mesh);

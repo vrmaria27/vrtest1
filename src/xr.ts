@@ -1,11 +1,20 @@
 import * as THREE from 'three';
 
+export interface XRHUDAction {
+  id: string;
+  label: string;
+  disabled?: boolean;
+}
+
 export interface XRHUD {
   title: string;
   detail: string;
   credits: number;
   status: string;
   mode: string;
+  objective?: string;
+  progress?: string;
+  actions?: XRHUDAction[];
 }
 
 export interface XROptions {
@@ -19,6 +28,7 @@ export interface XROptions {
   onCycle: (direction: number) => void;
   onRotate: () => void;
   onMode: () => void;
+  onAction?: (id: string) => void;
   canTeleport?: (point: THREE.Vector3) => boolean;
   resolveAim?: (raycaster: THREE.Raycaster) => THREE.Vector3 | null;
   getHUD: () => XRHUD;
@@ -42,6 +52,7 @@ export function setupXR(options: XROptions): {
   let hudState = '';
   let hudElapsed = 0;
   let disposed = false;
+  let hoveredAction: string | null = null;
 
   const rayGeometry = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(), new THREE.Vector3(0, 0, -1),
@@ -66,31 +77,62 @@ export function setupXR(options: XROptions): {
 
   const canvas = document.createElement('canvas');
   canvas.width = 1200;
-  canvas.height = 420;
+  canvas.height = 800;
   const context = canvas.getContext('2d');
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  const hudGeometry = new THREE.PlaneGeometry(0.86, 0.301);
+  const hudGeometry = new THREE.PlaneGeometry(1.02, 0.68);
   const hudMaterial = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, toneMapped: false });
   const hud = new THREE.Mesh(hudGeometry, hudMaterial);
-  hud.position.set(0, -0.43, -1.2);
+  hud.name = 'colony-console';
+  hud.position.set(0, -0.36, -1.35);
   hud.renderOrder = 100;
   hud.visible = false;
   camera.add(hud);
 
-  function groundPoint(index: number, useWorldResolver = false): THREE.Vector3 | null {
+  function controllerRay(index: number): boolean {
     const controller = controllers[index];
-    if (!controller || !sources.has(index)) return null;
+    if (!controller || !sources.has(index)) return false;
     controller.updateWorldMatrix(true, false);
     rotation.identity().extractRotation(controller.matrixWorld);
     raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
     raycaster.ray.direction.set(0, 0, -1).applyMatrix4(rotation).normalize();
     raycaster.far = 110;
+    return true;
+  }
+
+  function groundPoint(index: number, useWorldResolver = false): THREE.Vector3 | null {
+    if (!controllerRay(index)) return null;
     const point = useWorldResolver && options.resolveAim
       ? options.resolveAim(raycaster)
       : raycaster.intersectObject(ground, false)[0]?.point ?? null;
     if (!point || point.x < -49 || point.x > 49 || point.z < -49 || point.z > 49) return null;
     return point.clone();
+  }
+
+  function actionLayout(state: XRHUD) {
+    return (state.actions ?? []).slice(0, 6).map((action, index) => ({
+      action,
+      x: 38 + (index % 2) * 570,
+      y: 352 + Math.floor(index / 2) * 99,
+      width: 552,
+      height: 83,
+    }));
+  }
+
+  function consoleHit(index: number) {
+    if (!hud.visible || !controllerRay(index)) return null;
+    // The console is part of the scene, not a DOM overlay. Its UV coordinates
+    // map directly to the same button rectangles used to paint the texture.
+    hud.updateWorldMatrix(true, false);
+    const hit = raycaster.intersectObject(hud, false)[0];
+    if (!hit?.uv) return null;
+    const x = hit.uv.x * canvas.width;
+    const y = (1 - hit.uv.y) * canvas.height;
+    const button = actionLayout(options.getHUD()).find(item =>
+      x >= item.x && x <= item.x + item.width && y >= item.y && y <= item.y + item.height,
+    );
+    return { distance: hit.distance, action: button?.action };
   }
 
   function aimingIndex(): number {
@@ -121,6 +163,16 @@ export function setupXR(options: XROptions): {
     };
     const select = (): void => {
       if (!renderer.xr.isPresenting || teleporting || index !== aimingIndex()) return;
+      const hit = consoleHit(index);
+      if (hit) {
+        // A disabled button or blank part of the panel still blocks a trigger
+        // from placing a building through the interface into the world.
+        options.onAim(null);
+        if (hit.action && !hit.action.disabled) options.onAction?.(hit.action.id);
+        hudState = '';
+        paintHUD();
+        return;
+      }
       // Refresh the ray before committing; no stale ghost location after a turn.
       options.onAim(groundPoint(index, true));
       options.onSelect();
@@ -141,6 +193,7 @@ export function setupXR(options: XROptions): {
     marker.visible = false;
     hud.visible = renderer.xr.isPresenting;
     hudState = '';
+    hoveredAction = null;
     options.onAim(null);
   }
   renderer.xr.addEventListener('sessionstart', resetSession);
@@ -175,13 +228,13 @@ export function setupXR(options: XROptions): {
   function paintHUD(): void {
     if (!context) return;
     const state = options.getHUD();
-    const serialized = JSON.stringify({ ...state, teleporting });
+    const serialized = JSON.stringify({ ...state, teleporting, hoveredAction });
     if (serialized === hudState) return;
     hudState = serialized;
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = 'rgba(20, 16, 34, 0.95)';
     context.beginPath();
-    context.roundRect(0, 0, 1200, 420, 28);
+    context.roundRect(0, 0, canvas.width, canvas.height, 28);
     context.fill();
     context.strokeStyle = '#5e6073';
     context.lineWidth = 2;
@@ -194,23 +247,76 @@ export function setupXR(options: XROptions): {
     context.fillText(`${Math.floor(state.credits).toLocaleString()} CR`, 1160, 44);
     context.textAlign = 'left';
     context.fillStyle = '#f5f0ff';
-    context.font = '600 45px system-ui, sans-serif';
-    context.fillText(teleporting ? 'Choose your landing spot' : state.title.slice(0, 40), 38, 105);
-    context.font = '27px system-ui, sans-serif';
-    context.fillStyle = '#c1b9d1';
-    context.fillText(teleporting ? 'Aim the left controller. Release the stick to teleport.' : state.detail.slice(0, 80), 38, 150);
-    context.fillStyle = '#92efd6';
-    context.font = '600 26px system-ui, sans-serif';
-    context.fillText(`${state.mode.toUpperCase()}  ·  ${state.status}`.slice(0, 83), 38, 200);
-    context.fillStyle = '#4b435d';
-    context.fillRect(38, 228, 1122, 1);
-    context.font = '25px system-ui, sans-serif';
+    context.font = '600 39px system-ui, sans-serif';
+    context.fillText(teleporting ? 'Choose your landing spot' : state.title, 38, 102);
+    if (state.progress && !teleporting) {
+      context.font = '22px system-ui, sans-serif';
+      context.textAlign = 'right';
+      context.fillStyle = '#b9dccf';
+      context.fillText(state.progress, 1160, 96);
+      context.textAlign = 'left';
+    }
+    context.font = '500 31px system-ui, sans-serif';
     context.fillStyle = '#f5f0ff';
-    context.fillText('Right trigger: build / remove     A / X: choose building', 38, 270);
-    context.fillText('B: build / remove mode             Y: rotate building', 38, 315);
+    wrapText(teleporting ? 'Aim the left controller. Release the stick to teleport.' : state.objective ?? state.detail, 38, 146, 1122, 36, 2);
+    if (state.objective && !teleporting) {
+      context.font = '24px system-ui, sans-serif';
+      context.fillStyle = '#bdb6cb';
+      wrapText(state.detail, 38, 221, 1122, 28, 2);
+    }
+    context.fillStyle = '#92efd6';
+    context.font = '500 25px system-ui, sans-serif';
+    wrapText(`${state.mode.toUpperCase()}  ·  ${state.status}`, 38, 294, 1122, 29, 2);
+    context.fillStyle = '#4b435d';
+    context.fillRect(38, 337, 1122, 1);
+    for (const { action, x, y, width, height } of actionLayout(state)) {
+      const hovered = hoveredAction === action.id;
+      context.fillStyle = action.disabled ? '#292535' : hovered ? '#526c64' : '#303f41';
+      context.strokeStyle = action.disabled ? '#494052' : hovered ? '#b9f3df' : '#6e8f85';
+      context.beginPath();
+      context.roundRect(x, y, width, height, 12);
+      context.fill();
+      context.stroke();
+      context.fillStyle = action.disabled ? '#9d94aa' : '#effbf6';
+      context.font = '500 27px system-ui, sans-serif';
+      wrapText(action.label, x + 22, y + 36, width - 44, 31, 2);
+    }
+    context.font = '23px system-ui, sans-serif';
+    context.fillStyle = '#f5f0ff';
+    context.fillText('Right trigger: build / reclaim or press a console button', 38, 690);
+    context.fillText('A / X: choose building    B: build / reclaim    Y: rotate', 38, 732);
     context.fillStyle = '#b5adc5';
-    context.fillText('Left stick: aim + release to teleport     Right stick: snap turn', 38, 370);
+    context.fillText('Left stick: aim + release to teleport     Right stick: snap turn', 38, 774);
     texture.needsUpdate = true;
+  }
+
+  function wrapText(text: string, x: number, y: number, width: number, lineHeight: number, maxLines: number): void {
+    if (!context) return;
+    const measure = (value: string) => {
+      const metrics = context.measureText(value);
+      return metrics && Number.isFinite(metrics.width) ? metrics.width : value.length * 16;
+    };
+    let remaining = text.trim().replace(/\s+/g, ' ');
+    for (let lineIndex = 0; lineIndex < maxLines && remaining; lineIndex++) {
+      if (measure(remaining) <= width) {
+        context.fillText(remaining, x, y + lineIndex * lineHeight);
+        return;
+      }
+      // Never let a final line grow beyond its allotted rectangle. Long status
+      // messages and user-visible labels fit safely, with an explicit ellipsis.
+      const suffix = lineIndex === maxLines - 1 ? '…' : '';
+      let count = remaining.length;
+      while (count > 0 && measure(remaining.slice(0, count) + suffix) > width) count--;
+      if (suffix) {
+        context.fillText(remaining.slice(0, count).trimEnd() + suffix, x, y + lineIndex * lineHeight);
+        return;
+      }
+      const lastSpace = remaining.lastIndexOf(' ', count);
+      // A long unbroken word can be split rather than leaking outside the panel.
+      const split = lastSpace > 0 ? lastSpace : Math.max(1, count);
+      context.fillText(remaining.slice(0, split), x, y + lineIndex * lineHeight);
+      remaining = remaining.slice(split).trimStart();
+    }
   }
 
   function update(deltaSeconds: number): void {
@@ -263,10 +369,17 @@ export function setupXR(options: XROptions): {
     }
     marker.visible = teleporting && !!teleportTarget;
     if (teleportTarget) marker.position.set(teleportTarget.x, 0.025, teleportTarget.z);
-    options.onAim(teleporting ? null : groundPoint(aimingIndex(), true));
+    const activeIndex = aimingIndex();
+    const hit = teleporting ? null : consoleHit(activeIndex);
+    hoveredAction = hit?.action?.id ?? null;
+    options.onAim(teleporting || hit ? null : groundPoint(activeIndex, true));
     for (let index = 0; index < controllers.length; index++) {
-      const point = groundPoint(index, index === aimingIndex());
       const ray = rays[index]!;
+      if (index === activeIndex && hit) {
+        ray.scale.z = hit.distance;
+        continue;
+      }
+      const point = groundPoint(index, index === activeIndex);
       if (point) {
         controllers[index]!.getWorldPosition(headBefore);
         ray.scale.z = Math.min(110, headBefore.distanceTo(point));

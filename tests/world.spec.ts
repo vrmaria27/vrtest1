@@ -1,113 +1,138 @@
 import { test, expect, type Page } from '@playwright/test';
+import { PerspectiveCamera, Vector3 } from 'three';
+import type { GameSave } from '../src/domain/mission';
+import type { GameLibrary } from '../src/game-persistence';
 
-const key = 'aurelia.world.v1';
-async function readWorld(page: Page) {
-  return page.evaluate(key => JSON.parse(localStorage.getItem(key)!), key);
+const key = 'aurelia.saves.v2';
+async function readGame(page: Page): Promise<GameSave> {
+  return page.evaluate(key => {
+    const library = JSON.parse(localStorage.getItem(key)!) as GameLibrary;
+    return library[library.activeMode!]!;
+  }, key);
 }
-async function clickEmptyGround(page: Page) {
-  // Click an unoccupied plot in the real rendered/raycasted scene; no app test hooks.
-  for (const point of [{x:920,y:650},{x:1060,y:750},{x:800,y:650},{x:1100,y:620},{x:850,y:760},{x:720,y:680}]) {
-    const before = (await readWorld(page)).buildings.length;
-    await page.locator('#viewport canvas').click({ position: point });
-    if ((await readWorld(page)).buildings.length > before) return point;
-  }
-  throw new Error('Could not build on an empty visible plot.');
+async function freeBuild(page: Page) {
+  await page.goto('/');
+  await page.locator('#story-choices [data-action="free-build"]').click();
+  await expect(page.locator('#welcome-panel')).toBeHidden();
+}
+function project(x: number, y: number, z: number) {
+  const camera = new PerspectiveCamera(55, 1440 / 1000, 0.1, 2200);
+  camera.position.set(24, 12, 36);
+  camera.lookAt(-3, 3, 0);
+  camera.updateMatrixWorld();
+  const point = new Vector3(x, y, z).project(camera);
+  return { x: (point.x + 1) * 720, y: (1 - point.y) * 500 };
+}
+async function clickPlot(page: Page, x: number, z: number, height = 0) {
+  const point = project(x * 5, height, z * 5);
+  await page.mouse.click(point.x, point.y);
+}
+async function downloadGame(page: Page): Promise<GameSave> {
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export world' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('aurelia-free.json');
+  const stream = await download.createReadStream();
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
+  return JSON.parse(Buffer.concat(chunks).toString()) as GameSave;
 }
 
-test('city can build, undo, reclaim, persist and export without browser errors', async ({ page }) => {
+test('free build keeps construction, roof selection, economy, undo, persistence and export', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.goto('/');
+  await freeBuild(page);
   await expect(page.locator('#building-count')).toHaveText('6');
   await expect(page.locator('#credits')).toHaveText('22,960');
-  const initial = await readWorld(page);
-  // A roof/body hit must reclaim that building, not the terrain behind it.
+  await expect(page.locator('#mission-panel')).toBeHidden();
+  const initial = await readGame(page);
+
+  // Pick the observatory's visible body, rather than its original ground point.
   await page.locator('#reclaim-mode').click();
-  await page.locator('#viewport canvas').click({ position: { x: 867, y: 488 } });
+  await clickPlot(page, 1, 0, 4.5);
   await expect(page.locator('#building-count')).toHaveText('5');
-  expect((await readWorld(page)).buildings.some((building: {type:string}) => building.type === 'tower')).toBe(false);
+  expect((await readGame(page)).world.buildings.some(building => building.type === 'tower')).toBe(false);
   await page.locator('#undo').click();
   await page.locator('#build-mode').click();
-  const point = await clickEmptyGround(page);
+  await clickPlot(page, 3, 0);
   await expect(page.locator('#building-count')).toHaveText('7');
   await expect(page.locator('#credits')).toHaveText('22,840');
-  const placed = await readWorld(page);
-  expect(placed.buildings.at(-1).type).toBe('habitat');
+  expect((await readGame(page)).world.buildings.at(-1)?.type).toBe('habitat');
 
   await page.locator('#reclaim-mode').click();
-  await page.locator('#viewport canvas').click({ position: point });
+  await clickPlot(page, 3, 0, 1.2);
   await expect(page.locator('#building-count')).toHaveText('6');
   await expect(page.locator('#credits')).toHaveText('22,930');
   await page.locator('#undo').click();
   await expect(page.locator('#building-count')).toHaveText('7');
-  await expect(page.locator('#credits')).toHaveText('22,840');
   await page.locator('#undo').click();
-  expect((await readWorld(page)).buildings).toEqual(initial.buildings);
+  expect((await readGame(page)).world.buildings).toEqual(initial.world.buildings);
   await expect(page.locator('#credits')).toHaveText('22,960');
 
-  await page.getByRole('button', { name: /Solar array/ }).click();
+  await page.locator('[data-building="power"]').click();
   await page.keyboard.press('r');
-  await clickEmptyGround(page);
-  const saved = await readWorld(page);
-  expect(saved.buildings.at(-1)).toMatchObject({ type: 'power', rotation: 1 });
+  await clickPlot(page, 3, 0);
+  const saved = await readGame(page);
+  expect(saved.world.buildings.at(-1)).toMatchObject({ type: 'power', rotation: 1 });
   await page.reload();
+  await expect(page.locator('#story-choices [data-action="continue"]')).toBeVisible();
+  await page.locator('#story-choices [data-action="continue"]').click();
   await expect(page.locator('#building-count')).toHaveText('7');
-  expect(await readWorld(page)).toEqual(saved);
-
-  const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Export world' }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe('aurelia-new-meridian.json');
-  const stream = await download.createReadStream();
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream!) chunks.push(Buffer.from(chunk));
-  expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual(saved);
+  expect(await readGame(page)).toEqual(saved);
+  expect(await downloadGame(page)).toEqual(saved);
   expect(errors).toEqual([]);
 });
 
-test('valid backups import atomically, broken backups and corrupt local saves are preserved', async ({ page }) => {
-  await page.goto('/');
-  await expect(page.locator('#building-count')).toHaveText('6');
-  const before = await readWorld(page);
+test('backups import atomically and corrupt saved bytes are preserved', async ({ page }) => {
+  await freeBuild(page);
+  const before = await readGame(page);
   await page.locator('#world-file').setInputFiles({ name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{broken') });
   await expect(page.locator('#toast')).toContainText('not valid world JSON');
-  expect(await readWorld(page)).toEqual(before);
+  expect(await readGame(page)).toEqual(before);
 
-  const imported = {...before, buildings: [], credits: 24000, revision: 20};
+  const imported: GameSave = { ...before, world: { ...before.world, buildings: [], credits: 24000, revision: 20 } };
   page.once('dialog', dialog => dialog.accept());
-  await page.locator('#world-file').setInputFiles({ name:'backup.json', mimeType:'application/json', buffer:Buffer.from(JSON.stringify(imported)) });
+  await page.locator('#world-file').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(imported)) });
   await expect(page.locator('#building-count')).toHaveText('0');
-  expect(await readWorld(page)).toEqual(imported);
+  expect(await readGame(page)).toEqual(imported);
   await page.locator('#undo').click();
   await expect(page.locator('#building-count')).toHaveText('6');
 
-  await page.evaluate(key => localStorage.setItem(key, '{my original corrupted save'), key);
+  const corrupt = '{my original corrupted save';
+  await page.evaluate(({ key, corrupt }) => localStorage.setItem(key, corrupt), { key, corrupt });
   await page.reload();
   await expect(page.locator('#save-state')).toContainText('Export');
-  expect(await page.evaluate(key => localStorage.getItem(key), key)).toBe('{my original corrupted save');
+  expect(await page.evaluate(key => localStorage.getItem(key), key)).toBe(corrupt);
+  // A valid import can be played, but must not erase an unreadable save library.
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('#world-file').setInputFiles({ name: 'session-only.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(before)) });
+  await expect(page.locator('#building-count')).toHaveText('6');
+  await expect(page.locator('#save-state')).toContainText('Export');
+  await expect(page.locator('#toast')).toContainText('for this session');
+  expect(await page.evaluate(key => localStorage.getItem(key), key)).toBe(corrupt);
 });
 
-test('VR fallback explains Quest access; compact view keeps construction controls usable', async ({ page }) => {
-  await page.goto('/');
+test('VR fallback explains Quest access and compact controls stay usable', async ({ page }) => {
+  await freeBuild(page);
   await page.locator('#enter-vr').click();
   await expect(page.getByRole('dialog')).toBeVisible();
   await expect(page.locator('#guide')).toContainText('Meta Quest 3 / 3S');
   await expect(page.locator('#vr-diagnostic')).toContainText('unavailable');
   await page.locator('#guide-done').click();
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole('button', { name: /Greenhouse/ })).toBeVisible();
-  await page.getByRole('button', { name: /Greenhouse/ }).click();
-  await expect(page.getByRole('button', { name: /Greenhouse/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('[data-building="greenhouse"]')).toBeVisible();
+  await page.locator('[data-building="greenhouse"]').click();
+  await expect(page.locator('[data-building="greenhouse"]')).toHaveAttribute('aria-pressed', 'true');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test('a failed browser save stays visible after a successful building action', async ({ page }) => {
+test('failed saves remain visible after a successful building action', async ({ page }) => {
   await page.addInitScript(() => {
     Storage.prototype.setItem = () => { throw new DOMException('Storage quota exceeded', 'QuotaExceededError'); };
   });
-  await page.goto('/');
+  await freeBuild(page);
   await expect(page.locator('#building-count')).toHaveText('6');
-  await page.locator('#viewport canvas').click({ position: { x: 920, y: 650 } });
+  await clickPlot(page, 3, 0);
   await expect(page.locator('#building-count')).toHaveText('7');
   await expect(page.locator('#save-state')).toContainText('Save failed');
   await expect(page.locator('#toast')).toContainText('only in this session');

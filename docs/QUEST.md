@@ -2,48 +2,70 @@
 
 ## Open your world
 
-Use the current Meta Quest Browser on a Quest 3 / 3S, with two tracked controllers. Open the app's deployed **HTTPS** URL in a normal browser tab. Wait for the world to load, then select **Enter VR** and accept the browser prompt. Headset use requires an immersive WebXR-capable browser; a desktop browser may offer the desktop view only.
+Use the current **Meta Quest Browser** on Quest 3 / 3S with two tracked controllers. Open the deployed **HTTPS** URL in a normal browser tab, wait for loading, then choose **Enter VR** and allow the immersive-session prompt. The default GitHub Pages address is `https://vrmaria27.github.io/vrtest1/` after a successful manual deployment.
 
-WebXR requires a secure context. An ordinary `http://` address on your computer's network does not meet that requirement on the headset. A self-signed certificate also needs to be trusted by the headset; the quickest route for this project is a real HTTPS static deployment using the [README instructions](../README.md#try-it-on-your-quest).
+WebXR requires a secure context. A normal `http://` computer LAN address does not satisfy that requirement on the headset. Use the [manual HTTPS deployment steps](../README.md#try-it-on-your-quest); building or running the local server does not publish the site.
+
+## Play A Light in the Dark
+
+Choose **Begin your story**, or **Continue** for a saved settlement. **Free build** is a separate mode and keeps its own settlement.
+
+The lower headset HUD contains the current objective, chapter progress and available actions. **Point the right controller at a HUD button and press its trigger** to start/continue, choose plants, activate the beacon, select a settlement-name preset, undo, or use other displayed options. A disabled action does not place a building behind the panel. Story actions do not require desktop DOM overlays.
+
+Follow the habitat → solar array → greenhouse → planting → landing pad → beacon loop. One solar array powers the whole settlement without wires. Choose amber **Sunleaf** or violet **Moonbloom**, then prepare a welcome. The incoming ship is marked at the landing pad; look toward it at your own pace. The app does not turn your camera. PIP remains after arrival, and the observatory unlocks for continued building.
+
+You can choose a settlement-name preset from the headset HUD after the visitor arrives. Use the desktop name field for a custom typed name. The final mystery line introduces no second playable quest.
+
+Story reclaims refund 100%; Free build retains its 75% refund. If you reclaim a required building, the next objective explains what needs restoring. Undo and VR entry/exit preserve historical progress and the single visitor. Reload during an approach restarts its short visual animation; reload after arrival restores the companion.
 
 ## In VR
 
 | Input | Action |
 | --- | --- |
-| Point the right controller | Preview a building site on the grid |
-| Right trigger | Place the selected building, or reclaim it in reclaim mode |
-| A | Next building type |
-| X | Previous building type |
+| Point the right controller at terrain | Preview a building site |
+| Right trigger over terrain/buildings | Place a building, or reclaim the pointed building in reclaim mode |
+| Right trigger over a HUD action | Select that action |
+| A / X | Next / previous unlocked building type |
 | B | Switch between build and reclaim modes |
 | Y | Rotate the preview a quarter turn |
-| Push the left thumbstick, aim the left controller, then release | Teleport to the indicated ground point |
+| Push the left thumbstick, aim the left controller, then release | Teleport to the indicated empty terrain |
 | Right thumbstick left / right | Turn in 30° steps |
 
-The headset HUD shows the selected building, remaining credits, current mode, and placement feedback. The marked arrival area stays clear of buildings. Teleportation and snap turning are used instead of continuous camera movement. Use your headset's normal system controls to leave immersive mode.
+The HUD also shows credits and feedback, including save failures. Use its visible actions and Journey options for settings. Audio starts muted; all guidance is visual. Enable sound only if wanted. Reduced motion shortens or removes decorative movement and transitions without changing progression. The initial setting respects the system preference.
 
-Hand tracking is not part of this release. Controller input has automated coverage using mocked WebXR sources. Actual controller mapping, visual scale, comfort, and frame rate still require a physical headset check before calling the VR experience verified.
+The initial arrival area stays clear of construction. Teleportation and snap turns avoid continuous camera travel. Use your headset's normal system controls to leave immersive mode. Hand tracking is not supported.
 
 ## On a desktop
 
 | Input | Action |
 | --- | --- |
 | Click an empty grid site | Place a building |
-| Drag | Orbit the view |
+| Drag | Orbit |
 | Scroll | Zoom |
-| 1–5 | Select a building type |
-| R | Rotate the preview |
-| D | Reclaim mode |
-| B | Build mode |
-| Ctrl / Cmd + Z | Undo the last edit |
+| 1–5 | Select the corresponding available building type |
+| R | Rotate |
+| D / B | Reclaim / build mode |
+| Ctrl / Cmd + Z | Undo |
 
-Use the visible controls to change buildings, save backups, import worlds, and reset your view. Import replaces the active settlement after validation; export a backup first if you want to retain both.
+Use the mission's visible choices to plant and activate the beacon, then type a custom settlement name after arrival. Sound and reduced-motion options are available on screen. Export includes the active mode's mission progress; import validates the file before replacing its corresponding slot, while keeping the other mode. Export a backup before replacing something you want to retain.
+
+## Short physical playtest
+
+Automated XR checks use mocked sources; physical Quest tracking, control mapping, visual scale, comfort and sustained frame rate remain unverified until this checklist is performed on hardware.
+
+1. Begin or continue Story entirely through the controller HUD; read each objective at a comfortable distance.
+2. Place and rotate a habitat, power it, build a greenhouse and choose either plant variety. Check the windows and growth/native-life feedback with sound muted.
+3. Reclaim a prerequisite, read the repair instruction, and undo. Check that historical acknowledgements do not repeat.
+4. Place a landing pad, activate the beacon through the HUD, look toward the arrival beam, meet PIP and select a settlement-name preset.
+5. Teleport and snap turn before and after arrival. Enter/exit VR and reload; confirm the city and companion persist.
+6. Try reduced motion and optional sound. Switch to Free build and confirm Story remains available. Record headset/browser version, comfort, readability and frame rate separately.
 
 ## If VR does not start
 
-- Confirm you are on the deployed `https://` address in **Meta Quest Browser**. An embedded browser inside another app may not support immersive WebXR.
-- Update the headset/browser, connect both controllers, and try entering VR again from a normal tab. Browser permission denial must be resolved before another session can start.
-- If the browser still reports no VR support, the desktop builder remains available. Record the headset/browser version and the displayed error for diagnosis.
-- If the world is missing, confirm the deployment completed and that the entire `dist/` output was uploaded. GitHub Pages must use the **GitHub Actions** source for the provided workflow.
-- If desktop and headset settlements differ, they are separate browser saves. Transfer an exported world file; there is no synchronization service yet.
+- Use the deployed `https://` address in a normal **Meta Quest Browser** tab. Another app's embedded browser may not support immersive WebXR.
+- Update the headset/browser, connect both controllers and check immersive-session permissions before retrying.
+- If VR is unavailable, desktop play remains available. Record the browser/headset version and exact displayed error for diagnosis.
+- If the page or assets are missing, confirm that manual deployment succeeded and the entire `dist/` output was uploaded. The supplied GitHub workflow needs **GitHub Actions** as the Pages source.
+- Different desktop and headset settlements are expected: saves are browser-local. Transfer a JSON export; no synchronization service exists.
 
-Keep your headset's boundary and enough physical room to use the controllers. The app cannot replace the headset's physical-space protection.
+Keep your headset boundary and enough physical room to use the controllers. The app cannot replace the headset's physical-space protection.

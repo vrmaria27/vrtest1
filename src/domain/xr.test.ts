@@ -1,13 +1,18 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { setupXR, type XROptions } from '../xr';
+import { setupXR, type XROptions, type XRHUD } from '../xr';
 import type { WebXRSpaceEventMap } from 'three/src/renderers/webxr/WebXRController.js';
 
 /** Exercise controller state without pretending a simulated session is hardware. */
 function fixture(t: TestContext, canTeleport?: (point: THREE.Vector3) => boolean, resolveAim?: XROptions['resolveAim']) {
   const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
-  const context = new Proxy({}, { get: () => () => undefined });
+  const paintedTexts: Array<{ text: string; x: number; y: number; width: number }> = [];
+  const contextValues: Record<string, unknown> = { font: '24px sans-serif' };
+  const textWidth = (text: string) => text.length * Number(String(contextValues.font).match(/(\d+)px/)?.[1] ?? 24) * 0.6;
+  contextValues.measureText = (text: string) => ({ width: textWidth(text) });
+  contextValues.fillText = (text: string, x: number, y: number) => paintedTexts.push({ text, x, y, width: textWidth(text) });
+  const context = new Proxy(contextValues, { get: (target, key) => Reflect.get(target, key) ?? (() => undefined) });
   Object.defineProperty(globalThis, 'document', {
     configurable: true,
     value: { createElement: () => ({ width: 0, height: 0, getContext: () => context }) },
@@ -21,6 +26,7 @@ function fixture(t: TestContext, canTeleport?: (point: THREE.Vector3) => boolean
   // room-scale offset catches movement code that accidentally ignores the rig.
   const trackingCamera = new THREE.ArrayCamera();
   trackingCamera.position.set(0.45, 1.6, -0.2);
+  camera.position.copy(trackingCamera.position);
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.MeshBasicMaterial());
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
@@ -40,7 +46,8 @@ function fixture(t: TestContext, canTeleport?: (point: THREE.Vector3) => boolean
   }
   const left = source('left');
   const right = source('right');
-  const state = { aimed: null as THREE.Vector3 | null, selections: 0, cycles: 0, modes: 0, rotations: 0 };
+  const state = { aimed: null as THREE.Vector3 | null, selections: 0, cycles: 0, modes: 0, rotations: 0, actions: [] as string[] };
+  const hud: XRHUD = { title: 'Habitat', detail: '120 CR', credits: 2400, status: 'Ready', mode: 'Build' };
   const options: XROptions = {
     renderer: { xr: manager } as unknown as THREE.WebGLRenderer,
     scene, rig, camera, ground, canTeleport, resolveAim,
@@ -49,7 +56,8 @@ function fixture(t: TestContext, canTeleport?: (point: THREE.Vector3) => boolean
     onCycle: direction => { state.cycles += direction; },
     onRotate: () => { state.rotations++; },
     onMode: () => { state.modes++; },
-    getHUD: () => ({ title: 'Habitat', detail: '120 CR', credits: 2400, status: 'Ready', mode: 'Build' }),
+    onAction: id => { state.actions.push(id); },
+    getHUD: () => hud,
   };
   const api = setupXR(options);
   for (const [index, controller] of controllers.entries()) {
@@ -67,7 +75,19 @@ function fixture(t: TestContext, canTeleport?: (point: THREE.Vector3) => boolean
   });
   const headPosition = () => rig.localToWorld(trackingCamera.position.clone());
   const targetPoint = () => rig.localToWorld(new THREE.Vector3(0, 0, 8.5));
-  return { ...api, scene, camera, rig, manager, controllers, left, right, state, headPosition, targetPoint };
+  return { ...api, scene, camera, rig, manager, controllers, left, right, state, hud, paintedTexts, headPosition, targetPoint };
+}
+
+function aimAtConsole(xr: ReturnType<typeof fixture>, pixelX: number, pixelY: number): number {
+  const console = xr.camera.getObjectByName('colony-console');
+  assert.ok(console, 'the action interface must exist in the actual headset scene');
+  const controller = xr.controllers[1]!;
+  xr.scene.updateMatrixWorld(true);
+  const point = console.localToWorld(new THREE.Vector3((pixelX / 1200 - 0.5) * 1.02, (0.5 - pixelY / 800) * 0.68, 0));
+  const localPoint = controller.parent!.worldToLocal(point.clone());
+  controller.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), localPoint.sub(controller.position).normalize());
+  controller.updateWorldMatrix(true, false);
+  return controller.getWorldPosition(new THREE.Vector3()).distanceTo(point);
 }
 
 function close(actual: THREE.Vector3, expected: THREE.Vector3, message: string) {
@@ -198,4 +218,73 @@ test('world aim resolver selects a building while teleportation still targets th
   xr.update(0.1);
   floor.y = 1.6;
   close(xr.headPosition(), floor, 'teleport must ignore building aim resolver');
+});
+
+test('the right controller can ray-select mission actions in the headset console', t => {
+  const xr = fixture(t);
+  xr.hud.objective = 'Choose a place for your first habitat.';
+  xr.hud.progress = 'A Light in the Dark · 1 / 6';
+  xr.hud.actions = [
+    { id: 'story', label: 'Begin your story' },
+    { id: 'free', label: 'Free build' },
+    { id: 'sunleaf', label: 'Plant Sunleaf' },
+    { id: 'moonbloom', label: 'Plant Moonbloom' },
+    { id: 'undo', label: 'Undo' },
+    { id: 'mute', label: 'Mute sound' },
+  ];
+  xr.update(0.15);
+  // Texture pixels are mapped through the real plane's UVs and controller ray.
+  const distance = aimAtConsole(xr, 884, 590);
+  xr.update(0.15);
+  assert.equal(xr.state.aimed, null, 'pointing at the console clears the terrain ghost');
+  const ray = xr.controllers[1]!.getObjectByName('controller-ray');
+  assert.ok(ray);
+  assert.ok(Math.abs(ray.scale.z - distance) < 1e-7, 'the ray stops on the visible action button');
+  xr.controllers[1]!.dispatchEvent({ type: 'selectstart', data: xr.right.input });
+  assert.deepEqual(xr.state.actions, ['mute']);
+  assert.equal(xr.state.selections, 0, 'a console trigger must not also construct a building');
+  aimAtConsole(xr, 314, 393);
+  xr.controllers[1]!.dispatchEvent({ type: 'selectstart', data: xr.right.input });
+  assert.deepEqual(xr.state.actions, ['mute', 'story']);
+});
+
+test('disabled and empty console areas block accidental construction and use live action state', t => {
+  const xr = fixture(t);
+  xr.hud.actions = [{ id: 'beacon', label: 'Activate beacon', disabled: true }];
+  xr.update(0.15);
+  aimAtConsole(xr, 314, 393);
+  xr.controllers[1]!.dispatchEvent({ type: 'selectstart', data: xr.right.input });
+  assert.deepEqual(xr.state.actions, []);
+  assert.equal(xr.state.selections, 0);
+  // Action availability can change between HUD texture refreshes; the command
+  // must use current prerequisites rather than the last painted button state.
+  xr.hud.actions[0]!.disabled = false;
+  xr.controllers[1]!.dispatchEvent({ type: 'selectstart', data: xr.right.input });
+  assert.deepEqual(xr.state.actions, ['beacon']);
+  aimAtConsole(xr, 600, 330);
+  xr.controllers[1]!.dispatchEvent({ type: 'selectstart', data: xr.right.input });
+  assert.deepEqual(xr.state.actions, ['beacon']);
+  assert.equal(xr.state.selections, 0, 'blank console space must not build through the panel');
+});
+
+test('mission guidance wraps in distinct rows and overly long final lines stay inside the console', t => {
+  const xr = fixture(t);
+  xr.hud.objective = 'Bring your home to life with solar power.';
+  xr.hud.detail = 'One solar array powers your whole settlement. No cables or wiring are needed. Place it anywhere on an empty plot and watch your habitat windows light up.';
+  xr.hud.status = 'This deliberately long status message '.repeat(12);
+  xr.hud.actions = [{ id: 'name', label: 'A very long unbroken label: ' + 'A'.repeat(200) }];
+  xr.update(0.15);
+  xr.update(0.15);
+  const detail = xr.paintedTexts.filter(line => line.y === 221 || line.y === 249);
+  assert.equal(detail.length, 2, 'the power explanation gets two readable lines');
+  assert.equal(detail.map(line => line.text).join(' '), xr.hud.detail, 'normal mission detail remains complete');
+  const objective = xr.paintedTexts.filter(line => line.y === 146 || line.y === 182);
+  assert.ok(objective.every(line => line.y < detail[0]!.y - 24), 'objective and detail rows must not overlap');
+  const status = xr.paintedTexts.filter(line => line.y === 294 || line.y === 323);
+  assert.equal(status.length, 2);
+  assert.ok(status.at(-1)!.text.endsWith('…'), 'oversized final status line must be visibly truncated');
+  assert.ok([...objective, ...detail, ...status].every(line => line.width <= 1122), 'all guidance stays inside its text rectangle');
+  const action = xr.paintedTexts.filter(line => line.y === 388 || line.y === 419);
+  assert.ok(action.at(-1)!.text.endsWith('…'));
+  assert.ok(action.every(line => line.width <= 508), 'button labels cannot overflow into adjacent actions');
 });
